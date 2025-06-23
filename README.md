@@ -1,5 +1,7 @@
 # CorroClient
 
+**The basis of this library was written the old-fashioned way in 2023 as modules within another project. I adulterated them with Claude in 2025, inside [another toy project](https://github.com/clutterstack/corro-port-ex), and the first upload of it as a library, including the initial version of this README, is the result of my asking Claude Sonnet to extract it into a library. As of this writing, I haven't even checked if it works.**
+
 A comprehensive Elixir client library for interacting with [Corrosion](https://github.com/superfly/corrosion) database clusters.
 
 Corrosion is a SQLite-based distributed database that provides strong consistency with multi-master replication. This library provides a complete interface for working with Corrosion clusters from Elixir applications.
