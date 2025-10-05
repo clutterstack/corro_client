@@ -108,4 +108,40 @@ defmodule CorroClientTest do
       assert Keyword.has_key?(functions, :stop_subscription)
     end
   end
+
+  describe "query payload formatting" do
+    test "returns raw query when params are empty" do
+      assert Client.build_query_payload("SELECT 1", []) == "SELECT 1"
+      assert Client.build_query_payload("SELECT 1", nil) == "SELECT 1"
+    end
+
+    test "wraps positional parameters in WithParams format" do
+      payload = Client.build_query_payload("SELECT * FROM t WHERE id = ?", [123])
+
+      assert payload == ["SELECT * FROM t WHERE id = ?", [123]]
+      assert Jason.encode!(payload)
+    end
+
+    test "converts keyword lists into named parameter map" do
+      payload = Client.build_query_payload("SELECT * FROM t WHERE id = :id", [id: 123, status: "active"])
+
+      assert payload == [
+               "SELECT * FROM t WHERE id = :id",
+               %{"id" => 123, "status" => "active"}
+             ]
+
+      assert Jason.encode!(payload)
+    end
+
+    test "converts map parameters and normalises keys" do
+      payload = Client.build_query_payload("SELECT * FROM t WHERE id = :id", %{"status" => "active", id: 1})
+
+      assert payload == [
+               "SELECT * FROM t WHERE id = :id",
+               %{"id" => 1, "status" => "active"}
+             ]
+
+      assert Jason.encode!(payload)
+    end
+  end
 end

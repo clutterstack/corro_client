@@ -65,6 +65,11 @@ defmodule CorroClient.Client do
   - `query`: SQL query string
   - `params`: Optional query parameters (default: [])
 
+  The `params` argument supports:
+  - positional parameters: `[:value, 123, true]`
+  - named parameters as a keyword list: `[id: 1, status: "active"]`
+  - named parameters as a map: `%{"id" => 1}`
+
   ## Returns
   - `{:ok, results}` - List of maps representing rows
   - `{:error, reason}` - Error details
@@ -78,7 +83,7 @@ defmodule CorroClient.Client do
   """
   @spec execute_query(connection(), String.t(), list()) :: query_result()
   def execute_query(connection, query, params \\ []) do
-    query_payload = if params == [], do: query, else: {query, params}
+    query_payload = build_query_payload(query, params)
 
     with {:ok, body} <- post_request(connection, "/v1/queries", query_payload) do
       {:ok, parse_query_response(body)}
@@ -147,6 +152,37 @@ defmodule CorroClient.Client do
         {:error, {:connection_error, exception}}
     end
   end
+
+  @doc false
+  @spec build_query_payload(String.t(), list() | map() | Keyword.t() | nil) ::
+          String.t() | [String.t() | list() | map()]
+  def build_query_payload(query, params) do
+    cond do
+      params in [nil, []] ->
+        query
+
+      Keyword.keyword?(params) ->
+        [query, build_named_params_map(params)]
+
+      is_map(params) ->
+        [query, build_named_params_map(params)]
+
+      true ->
+        [query, params]
+    end
+  end
+
+  defp build_named_params_map(params) do
+    params
+    |> Enum.into(%{}, fn
+      {key, value} -> {normalize_param_key(key), value}
+      key when is_atom(key) or is_binary(key) -> {normalize_param_key(key), nil}
+    end)
+  end
+
+  defp normalize_param_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_param_key(key) when is_binary(key), do: key
+  defp normalize_param_key(key), do: to_string(key)
 
   @doc """
   Parse Corrosion's JSONL query response format into a list of maps.
