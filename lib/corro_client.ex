@@ -18,10 +18,15 @@ defmodule CorroClient do
       # Execute queries
       {:ok, users} = CorroClient.query(conn, "SELECT * FROM users WHERE active = ?", [true])
 
+      {:ok, user} =
+        CorroClient.query(conn, "SELECT * FROM users WHERE id = :id", %{id: 42})
+
       # Execute transactions
       {:ok, _} = CorroClient.transaction(conn, [
         "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')",
-        "UPDATE stats SET user_count = user_count + 1"
+        {"UPDATE stats SET user_count = user_count + 1", []},
+        %{query: "INSERT INTO audit_log (user_id, action) VALUES (:id, :action)",
+          named_params: %{id: 1, action: "created"}}
       ])
 
       # Get cluster information
@@ -117,7 +122,8 @@ defmodule CorroClient do
   ## Parameters
   - `connection`: Connection created with `connect/2`
   - `query`: SQL query string
-  - `params`: Optional query parameters (default: [])
+  - `params`: Optional query parameters (default: []) supporting positional lists,
+    keyword or map named parameters, or verbose `%{query: ..., params: ..., named_params: ...}`
 
   ## Returns
   - `{:ok, results}` - List of maps representing rows
@@ -129,8 +135,11 @@ defmodule CorroClient do
 
       CorroClient.query(conn, "SELECT * FROM users WHERE age > ?", [21])
       # => {:ok, [%{"id" => 2, "name" => "Bob", "age" => 25}]}
+
+      CorroClient.query(conn, "SELECT * FROM users WHERE id = :id", %{id: 1})
+      # => {:ok, [%{"id" => 1, "name" => "Alice"}]}
   """
-  @spec query(connection(), String.t(), list()) :: query_result()
+  @spec query(connection(), String.t(), Client.query_params()) :: query_result()
   defdelegate query(connection, query, params \\ []), to: Client, as: :execute_query
 
   @doc """
@@ -141,7 +150,9 @@ defmodule CorroClient do
 
   ## Parameters
   - `connection`: Connection created with `connect/2`
-  - `statements`: List of SQL statements to execute atomically
+  - `statements`: List of SQL statements to execute atomically. Each statement
+    can be a plain string, a `{statement, params}` tuple, a `[statement, params]`
+    list, or a verbose map `%{query: ..., params: ..., named_params: ...}`.
 
   ## Returns
   - `{:ok, response}` - Transaction succeeded
@@ -150,13 +161,14 @@ defmodule CorroClient do
   ## Examples
       statements = [
         "INSERT INTO users (name, email) VALUES ('Charlie', 'charlie@example.com')",
-        "UPDATE stats SET user_count = user_count + 1",
-        "INSERT INTO audit_log (action, user_id) VALUES ('user_created', last_insert_rowid())"
+        {"UPDATE stats SET user_count = user_count + 1", []},
+        %{query: "INSERT INTO audit_log (action, user_id) VALUES (:action, :id)",
+          named_params: %{action: "user_created", id: 42}}
       ]
       CorroClient.transaction(conn, statements)
       # => {:ok, response}
   """
-  @spec transaction(connection(), [String.t()]) :: transaction_result()
+  @spec transaction(connection(), [Client.statement_input()]) :: transaction_result()
   defdelegate transaction(connection, statements), to: Client, as: :execute_transaction
 
   # Cluster Operations
@@ -249,7 +261,9 @@ defmodule CorroClient do
 
   ## Parameters
   - `connection`: Connection created with `connect/2`
-  - `query`: SQL query to subscribe to
+  - `query`: SQL statement to subscribe to. Accepts any Corrosion `Statement`
+    format (plain string, `{statement, params}`, `[statement, params]`, or
+    a verbose map with `:query`, `:params`, and/or `:named_params`).
   - `options`: Subscription configuration options
 
   ## Options
@@ -289,8 +303,15 @@ defmodule CorroClient do
         on_error: fn error -> Logger.error("Subscription error: \#{inspect(error)}") end,
         max_reconnect_attempts: 10
       )
+
+      # Parameterised subscription with named parameters
+      {:ok, pid} = CorroClient.subscribe(conn,
+        {"SELECT * FROM messages WHERE channel_id = :channel", %{channel: 42}},
+        on_event: &handle_message_event/1
+      )
   """
-  @spec subscribe(connection(), String.t(), keyword()) :: {:ok, pid()} | {:error, term()}
+  @spec subscribe(connection(), Client.statement_input(), keyword()) ::
+          {:ok, pid()} | {:error, term()}
   def subscribe(connection, query, options) do
     Subscriber.start_subscription(connection, [query: query] ++ options)
   end

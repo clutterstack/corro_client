@@ -13,10 +13,12 @@ defmodule CorroClient.Subscriber do
   use GenServer
   require Logger
 
-  @type connection :: CorroClient.Client.connection()
+  alias CorroClient.Client
+
+  @type connection :: Client.connection()
   @type event_callback :: (term() -> any())
   @type options :: [
-          query: String.t(),
+          query: Client.statement_input(),
           on_event: event_callback(),
           on_connect: (String.t() -> any()) | nil,
           on_error: (term() -> any()) | nil,
@@ -27,7 +29,7 @@ defmodule CorroClient.Subscriber do
 
   defstruct [
     :connection,
-    :query,
+    :statement,
     :on_event,
     :on_connect,
     :on_error,
@@ -52,7 +54,10 @@ defmodule CorroClient.Subscriber do
   - `options`: Subscription configuration
 
   ## Options
-  - `:query` - SQL query to subscribe to (required)
+  - `:query` - SQL statement to subscribe to (required). Accepts any
+    Corrosion `Statement` format: a plain string, `{statement, params}`
+    tuple, `[statement, params]` list, or a verbose map with `:query`,
+    `:params`, and/or `:named_params`.
   - `:on_event` - Callback function for data events (required)
   - `:on_connect` - Callback when subscription connects (optional)
   - `:on_error` - Callback for errors (optional)
@@ -83,7 +88,7 @@ defmodule CorroClient.Subscriber do
 
     initial_state = %__MODULE__{
       connection: connection,
-      query: Keyword.get(options, :query),
+      statement: options |> Keyword.get(:query) |> Client.build_statement_payload(),
       on_event: Keyword.get(options, :on_event),
       on_connect: Keyword.get(options, :on_connect),
       on_error: Keyword.get(options, :on_error),
@@ -323,7 +328,7 @@ defmodule CorroClient.Subscriber do
 
   defp run_subscription_stream(parent_pid, state) do
     url = state.connection.base_url <> "/v1/subscriptions"
-    json_query = Jason.encode!(state.query)
+    json_query = Jason.encode!(state.statement)
 
     Logger.info("CorroClient.Subscriber: Starting subscription stream to #{url}")
 

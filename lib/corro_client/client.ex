@@ -19,6 +19,7 @@ defmodule CorroClient.Client do
 
   @type query_result :: {:ok, [map()]} | {:error, term()}
   @type transaction_result :: {:ok, term()} | {:error, term()}
+  @type query_params :: list() | map() | Keyword.t() | nil
 
   @doc """
   Creates a connection configuration for a Corrosion node.
@@ -58,17 +59,19 @@ defmodule CorroClient.Client do
   @doc """
   Execute a SQL query against Corrosion's query endpoint.
 
-  Supports arbitrary SQL queries with optional parameters.
+  Supports arbitrary SQL queries with optional parameters using the
+  same payload formats accepted by Corrosion's `Statement` enum.
 
   ## Parameters
   - `connection`: Connection created with `connect/2`
   - `query`: SQL query string
   - `params`: Optional query parameters (default: [])
 
-  The `params` argument supports:
-  - positional parameters: `[:value, 123, true]`
-  - named parameters as a keyword list: `[id: 1, status: "active"]`
-  - named parameters as a map: `%{"id" => 1}`
+  The `params` argument supports the following forms:
+  - positional parameters: `[:value, 123, true]` (sends `["SELECT ...", [...]]`)
+  - named parameters as a keyword list or map: `[id: 1]` / `%{"id" => 1}`
+    (sends `["SELECT ...", {"id": 1}]`)
+  - verbose statement map: `%{query: "SELECT ...", params: [...], named_params: %{}}`
 
   ## Returns
   - `{:ok, results}` - List of maps representing rows
@@ -81,7 +84,7 @@ defmodule CorroClient.Client do
       iex> CorroClient.Client.execute_query(conn, "SELECT * FROM users WHERE id = ?", [1])
       {:ok, [%{"id" => 1, "name" => "Alice"}]}
   """
-  @spec execute_query(connection(), String.t(), list()) :: query_result()
+  @spec execute_query(connection(), String.t(), query_params()) :: query_result()
   def execute_query(connection, query, params \\ []) do
     query_payload = build_query_payload(query, params)
 
@@ -93,11 +96,14 @@ defmodule CorroClient.Client do
   @doc """
   Execute a list of SQL statements as a transaction.
 
-  Supports arbitrary SQL transactions with rollback on failure.
+  Supports arbitrary SQL transactions with rollback on failure. Each
+  statement uses the same formats as the `Statement` enum documented by
+  Corrosion's API (`"SQL"`, `["SQL", [...]]`, `["SQL", %{...}]`, or
+  `%{"query" => ..., "params" => ..., ...}`).
 
   ## Parameters
   - `connection`: Connection created with `connect/2`
-  - `statements`: List of SQL statements to execute atomically
+  - `statements`: List of SQL statements (strings, `{statement, params}`, or verbose maps)
 
   ## Returns
   - `{:ok, response}` - Transaction succeeded
@@ -106,14 +112,25 @@ defmodule CorroClient.Client do
   ## Examples
       iex> statements = [
       ...>   "INSERT INTO users (name) VALUES ('Alice')",
-      ...>   "UPDATE stats SET count = count + 1"
+      ...>   {"UPDATE stats SET count = count + 1", []},
+      ...>   {"INSERT INTO audit (user_id) VALUES (?)", [123]},
+      ...>   ["UPDATE users SET status = :status WHERE id = :id", %{id: 123, status: "active"}],
+      ...>   %{query: "INSERT INTO log(message) VALUES (?)", params: ["Created"]}
       ...> ]
       iex> CorroClient.Client.execute_transaction(conn, statements)
       {:ok, transaction_response}
   """
-  @spec execute_transaction(connection(), [String.t()]) :: transaction_result()
+  @type statement_input ::
+          String.t()
+          | {String.t(), list() | map() | Keyword.t() | nil}
+          | [String.t() | list() | map()]
+          | map()
+
+  @spec execute_transaction(connection(), [statement_input()]) :: transaction_result()
   def execute_transaction(connection, statements) when is_list(statements) do
-    post_request(connection, "/v1/transactions", statements)
+    payload = Enum.map(statements, &build_statement_payload/1)
+
+    post_request(connection, "/v1/transactions", payload)
   end
 
   @doc """
@@ -154,7 +171,7 @@ defmodule CorroClient.Client do
   end
 
   @doc false
-  @spec build_query_payload(String.t(), list() | map() | Keyword.t() | nil) ::
+  @spec build_query_payload(String.t(), query_params()) ::
           String.t() | [String.t() | list() | map()]
   def build_query_payload(query, params) do
     cond do
@@ -172,17 +189,64 @@ defmodule CorroClient.Client do
     end
   end
 
+  @doc false
+  @spec build_statement_payload(statement_input()) :: String.t() | list() | map()
+  def build_statement_payload(statement) when is_binary(statement), do: statement
+
+  def build_statement_payload({query, params}) when is_binary(query) do
+    build_query_payload(query, params)
+  end
+
+  def build_statement_payload([query, params]) when is_binary(query) do
+    cond do
+      Keyword.keyword?(params) -> [query, build_named_params_map(params)]
+      is_map(params) -> [query, build_named_params_map(params)]
+      true -> [query, params]
+    end
+  end
+
+  def build_statement_payload(%{} = verbose) do
+    verbose
+    |> Enum.reduce(%{}, fn
+      {:query, value}, acc when is_binary(value) -> Map.put(acc, "query", value)
+      {"query", value}, acc when is_binary(value) -> Map.put(acc, "query", value)
+      {:params, value}, acc -> Map.put(acc, "params", normalize_params(value))
+      {"params", value}, acc -> Map.put(acc, "params", normalize_params(value))
+      {:named_params, value}, acc -> Map.put(acc, "named_params", build_named_params_map(value))
+      {"named_params", value}, acc -> Map.put(acc, "named_params", build_named_params_map(value))
+      {key, value}, acc -> Map.put(acc, normalize_param_key(key), value)
+    end)
+  end
+
+  def build_statement_payload(statement), do: statement
+
+  defp build_named_params_map(params) when is_map(params) do
+    params
+    |> Enum.reduce(%{}, fn {key, value}, acc ->
+      Map.put(acc, normalize_param_key(key), value)
+    end)
+  end
+
   defp build_named_params_map(params) do
     params
-    |> Enum.into(%{}, fn
-      {key, value} -> {normalize_param_key(key), value}
-      key when is_atom(key) or is_binary(key) -> {normalize_param_key(key), nil}
+    |> Enum.reduce(%{}, fn
+      {key, value}, acc -> Map.put(acc, normalize_param_key(key), value)
+      key, acc when is_atom(key) or is_binary(key) -> Map.put(acc, normalize_param_key(key), nil)
     end)
   end
 
   defp normalize_param_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_param_key(key) when is_binary(key), do: key
   defp normalize_param_key(key), do: to_string(key)
+
+  defp normalize_params(params) do
+    cond do
+      params in [nil, []] -> params
+      Keyword.keyword?(params) -> build_named_params_map(params)
+      is_map(params) -> build_named_params_map(params)
+      true -> params
+    end
+  end
 
   @doc """
   Parse Corrosion's JSONL query response format into a list of maps.

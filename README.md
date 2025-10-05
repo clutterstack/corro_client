@@ -24,10 +24,14 @@ Corrosion is a SQLite-based distributed database that provides strong consistenc
 # Execute queries with parameters
 {:ok, users} = CorroClient.query(conn, "SELECT * FROM users WHERE active = ?", [true])
 
+# With named parameters
+{:ok, users} = CorroClient.query(conn, "SELECT * FROM users WHERE id = :id", %{id: 42})
+
 # Execute atomic transactions
 {:ok, _} = CorroClient.transaction(conn, [
   "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')",
-  "UPDATE stats SET user_count = user_count + 1"
+  {"UPDATE stats SET user_count = user_count + 1", []},
+  {"INSERT INTO audit_log (user_id, action) VALUES (:id, :action)", %{id: 1, action: "created"}}
 ])
 
 # Get cluster information
@@ -42,6 +46,38 @@ IO.puts("Active nodes: #{cluster_info.total_active_nodes}")
     event -> IO.inspect(event)
   end,
   on_connect: fn watch_id -> IO.puts("Subscription connected: #{watch_id}") end
+)
+```
+
+## Parameterized Queries and Transactions
+
+Both `/v1/queries` and `/v1/transactions` use Corrosion's `Statement` enum, so
+the client accepts every format supported by the API:
+
+- Simple string: `"SELECT * FROM users"`
+- Positional params: `{ "SELECT * FROM users WHERE id = ?", [123] }`
+- Named params: `{ "SELECT * FROM users WHERE id = :id", %{id: 123} }`
+- Verbose map: `%{query: "SELECT * FROM users", params: [...], named_params: %{...}}`
+
+Transactions take a list of statements and you can mix formats freely:
+
+```elixir
+statements = [
+  "INSERT INTO users (name) VALUES ('Alice')",
+  {"UPDATE stats SET count = count + 1", []},
+  {"INSERT INTO audit (user_id) VALUES (:id)", %{id: 1}},
+  %{query: "INSERT INTO log(message) VALUES (?)", params: ["created"]}
+]
+
+CorroClient.transaction(conn, statements)
+```
+
+Subscriptions accept the same statement formats:
+
+```elixir
+CorroClient.subscribe(conn,
+  {"SELECT * FROM messages WHERE channel_id = :channel", %{channel: 42}},
+  on_event: &handle_message/1
 )
 ```
 
@@ -204,4 +240,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Built for the [Corrosion](https://github.com/superfly/corrosion) distributed SQLite database
 - Extracted from the [CorroPort](https://github.com/your_org/corro_port) monitoring application
 - Uses [Req](https://github.com/wojtekmach/req) for robust HTTP client functionality
-

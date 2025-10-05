@@ -144,4 +144,46 @@ defmodule CorroClientTest do
       assert Jason.encode!(payload)
     end
   end
+
+  describe "transaction payload formatting" do
+    test "leaves plain strings unchanged" do
+      assert Client.build_statement_payload("INSERT INTO t VALUES (1)") == "INSERT INTO t VALUES (1)"
+    end
+
+    test "converts tuple statements using WithParams format" do
+      payload = Client.build_statement_payload({"INSERT INTO t VALUES (?)", ["a"]})
+
+      assert payload == ["INSERT INTO t VALUES (?)", ["a"]]
+      assert Jason.encode!(payload)
+    end
+
+    test "normalises keyword named params" do
+      payload =
+        Client.build_statement_payload({"INSERT INTO t VALUES (:id)", [id: 1, status: "active"]})
+
+      assert payload == [
+               "INSERT INTO t VALUES (:id)",
+               %{"id" => 1, "status" => "active"}
+             ]
+
+      assert Jason.encode!(payload)
+    end
+
+    test "normalises verbose maps" do
+      payload =
+        Client.build_statement_payload(%{
+          query: "INSERT INTO t VALUES (:id)",
+          params: [1],
+          named_params: [id: 1]
+        })
+
+      assert payload == %{
+               "query" => "INSERT INTO t VALUES (:id)",
+               "params" => [1],
+               "named_params" => %{"id" => 1}
+             }
+
+      assert Jason.encode!(payload)
+    end
+  end
 end

@@ -38,6 +38,40 @@ defmodule CorroClient.SubscriberTest do
       # Clean up
       GenServer.stop(pid)
     end
+
+    test "normalises tuple queries into statement payload" do
+      conn = %{base_url: "http://localhost:8081", req_options: []}
+
+      {:ok, pid} =
+        Subscriber.start_subscription(conn,
+          query: {"SELECT * FROM items WHERE id = ?", [123]},
+          on_event: fn _ -> :ok end
+        )
+
+      state = :sys.get_state(pid)
+      assert state.statement == ["SELECT * FROM items WHERE id = ?", [123]]
+
+      GenServer.stop(pid)
+    end
+
+    test "normalises verbose map queries" do
+      conn = %{base_url: "http://localhost:8081", req_options: []}
+
+      {:ok, pid} =
+        Subscriber.start_subscription(conn,
+          query: %{query: "SELECT * FROM logs WHERE level = :level", named_params: [level: "info"]},
+          on_event: fn _ -> :ok end
+        )
+
+      state = :sys.get_state(pid)
+
+      assert state.statement == %{
+               "query" => "SELECT * FROM logs WHERE level = :level",
+               "named_params" => %{"level" => "info"}
+             }
+
+      GenServer.stop(pid)
+    end
   end
 
   describe "callback handling" do
